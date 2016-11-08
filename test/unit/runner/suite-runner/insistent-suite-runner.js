@@ -4,8 +4,8 @@ const Events = require('lib/constants/events');
 const InsistentSuiteRunner = require('lib/runner/suite-runner/insistent-suite-runner');
 const RegularSuiteRunner = require('lib/runner/suite-runner/regular-suite-runner');
 const BrowserAgent = require('lib/runner/browser-runner/browser-agent');
-const CancelledError = require('lib/errors/cancelled-error');
 const NoRefImageError = require('lib/errors/no-ref-image-error');
+const makeStateStub = require('../../../util').makeStateStub;
 const makeSuiteStub = require('../../../util').makeSuiteStub;
 const makeSuiteTree = require('../../../util').makeSuiteTree;
 const Promise = require('bluebird');
@@ -30,7 +30,7 @@ describe('runner/suite-runner/insistent-suite-runner', () => {
         opts = opts || {};
 
         return InsistentSuiteRunner.create(
-            opts.suite || makeSuiteStub(),
+            opts.suite || makeSuiteStub({states: [makeStateStub()]}),
             opts.browserAgent || mkBrowserAgentStub_(),
             opts.config || mkConfigStub_({retry: 0})
         );
@@ -121,55 +121,6 @@ describe('runner/suite-runner/insistent-suite-runner', () => {
     });
 
     describe('run without retries', () => {
-        describe('on reject', () => {
-            it('should reject after first run', () => {
-                RegularSuiteRunner.prototype.run.returns(Promise.reject('some-error'));
-
-                const runner = mkInsistentRunner_();
-
-                return assert.isRejected(runner.run(), /some-error/)
-                    .then(() => assert.calledOnce(RegularSuiteRunner.prototype.run));
-            });
-
-            it('should emit ERROR event', () => {
-                RegularSuiteRunner.prototype.run.returns(Promise.reject(new Error()));
-
-                const suite = makeSuiteStub();
-                const browserAgent = mkBrowserAgentStub_('bro');
-                const onError = sinon.spy().named('onError');
-
-                return mkInsistentRunner_({suite, browserAgent})
-                    .on(Events.ERROR, onError)
-                    .run()
-                    .catch(() => {
-                        assert.calledOnce(onError);
-                        assert.calledWithMatch(onError, {
-                            suite,
-                            browserId: 'bro'
-                        });
-                    });
-            });
-
-            it('should not reject on cancel', () => {
-                RegularSuiteRunner.prototype.run.returns(Promise.reject(new CancelledError()));
-
-                const runner = mkInsistentRunner_();
-
-                return assert.isFulfilled(runner.run());
-            });
-
-            it('should not retry on cancel', () => {
-                RegularSuiteRunner.prototype.run.returns(Promise.reject(new CancelledError()));
-
-                const onError = sinon.spy().named('onError');
-
-                return mkInsistentRunner_()
-                    .on(Events.ERROR, onError)
-                    .run()
-                    .then(() => assert.notCalled(onError));
-            });
-        });
-
         describe('on ERROR', () => {
             it('should emit ERROR', () => {
                 const onError = sinon.spy().named('onError');
@@ -226,76 +177,18 @@ describe('runner/suite-runner/insistent-suite-runner', () => {
             }));
         };
 
-        describe('on reject', () => {
-            it('should try to run regular suite runner again', () => {
-                RegularSuiteRunner.prototype.run.onFirstCall().returns(Promise.reject('some-error'));
-
-                return mkRunnerWithRetries_()
-                    .run()
-                    .catch((e) => assert(!e, 'Should not be rejected'))
-                    .then(() => assert.calledTwice(RegularSuiteRunner.prototype.run));
-            });
-
-            it('should be rejected retry failed', () => {
-                RegularSuiteRunner.prototype.run.returns(Promise.reject('some-error'));
-
-                const result = mkRunnerWithRetries_().run();
-                return assert.isRejected(result, /some-error/);
-            });
-
-            it('should retry as much times as specified in config', () => {
-                RegularSuiteRunner.prototype.run.returns(Promise.reject('some-error'));
-                const config = mkConfigStub_({retry: 2});
-
-                return mkInsistentRunner_({config})
-                    .run()
-                    .catch(() => assert.callCount(RegularSuiteRunner.prototype.run, 1 + 2));
-            });
-
-            it('should emit RETRY event', () => {
-                RegularSuiteRunner.prototype.run.onFirstCall().returns(Promise.reject(new Error()));
-
-                const suite = makeSuiteStub();
-                const browserAgent = mkBrowserAgentStub_('bro');
-                const config = mkConfigStub_({retry: 3});
-                const onRetry = sinon.spy().named('onRetry');
-
-                return mkInsistentRunner_({suite, browserAgent, config})
-                    .on(Events.RETRY, onRetry)
-                    .run()
-                    .catch(() => {
-                        assert.calledOnce(onRetry);
-                        assert.calledWithMatch(onRetry, {
-                            suite,
-                            browserId: 'bro',
-                            attempt: 0,
-                            retriesLeft: 3
-                        });
-                    });
-            });
-
-            it('should not retry on cancel', () => {
-                RegularSuiteRunner.prototype.run.returns(Promise.reject(new CancelledError()));
-
-                const onError = sinon.spy().named('onError');
-
-                return mkRunnerWithRetries_()
-                    .on(Events.ERROR, onError)
-                    .run()
-                    .then(() => assert.notCalled(onError));
-            });
-        });
-
         describe('on ERROR', () => {
             it('it should emit RETRY instead of ERROR', () => {
+                const suite = makeSuiteStub();
+                const state = makeStateStub(suite);
+
                 let count = 0;
                 stubWrappedRun_((runner) => {
                     if (count++ === 0) { // only first time
-                        runner.emit(Events.ERROR, {foo: 'bar'});
+                        runner.emit(Events.ERROR, {foo: 'bar', state});
                     }
                 });
 
-                const suite = makeSuiteStub();
                 const browserAgent = mkBrowserAgentStub_('bro');
                 const config = mkConfigStub_({retry: 3});
                 const onError = sinon.spy().named('onError');
@@ -309,9 +202,10 @@ describe('runner/suite-runner/insistent-suite-runner', () => {
                         assert.notCalled(onError);
 
                         assert.calledOnce(onRetry);
-                        assert.calledWithMatch(onRetry, {
+                        assert.calledWith(onRetry, {
                             foo: 'bar',
                             suite,
+                            state,
                             browserId: 'bro',
                             attempt: 0,
                             retriesLeft: 3
@@ -320,7 +214,7 @@ describe('runner/suite-runner/insistent-suite-runner', () => {
             });
 
             it('should retry as much times as specified in config', () => {
-                stubWrappedRun_((runner) => runner.emit(Events.ERROR, {}));
+                stubWrappedRun_((runner) => runner.emit(Events.ERROR, {state: makeStateStub()}));
                 const config = mkConfigStub_({retry: 2});
 
                 return mkInsistentRunner_({config})
@@ -329,9 +223,11 @@ describe('runner/suite-runner/insistent-suite-runner', () => {
             });
 
             it('should count few errors during run for one', () => {
+                const state = makeStateStub();
+
                 stubWrappedRun_((runner) => {
-                    runner.emit(Events.ERROR, {});
-                    runner.emit(Events.ERROR, {});
+                    runner.emit(Events.ERROR, {state});
+                    runner.emit(Events.ERROR, {state});
                 });
                 const config = mkConfigStub_({retry: 2});
 
@@ -384,14 +280,16 @@ describe('runner/suite-runner/insistent-suite-runner', () => {
 
         describe('on TEST_RESULT with diff', () => {
             it('should emit RETRY instead of TEST_RESULT', () => {
+                const suite = makeSuiteStub();
+                const state = makeStateStub(suite);
+
                 let count = 0;
                 stubWrappedRun_((runner) => {
                     if (count++ === 0) { // only first time
-                        runner.emit(Events.TEST_RESULT, {equal: false});
+                        runner.emit(Events.TEST_RESULT, {equal: false, state});
                     }
                 });
 
-                const suite = makeSuiteStub();
                 const browserAgent = mkBrowserAgentStub_('bro');
                 const config = mkConfigStub_({retry: 3});
                 const onTestResult = sinon.spy().named('onTestResult');
@@ -408,6 +306,7 @@ describe('runner/suite-runner/insistent-suite-runner', () => {
                         assert.calledWithMatch(onRetry, {
                             equal: false,
                             suite,
+                            state,
                             browserId: 'bro',
                             attempt: 0,
                             retriesLeft: 3
@@ -416,7 +315,7 @@ describe('runner/suite-runner/insistent-suite-runner', () => {
             });
 
             it('should retry as much times as specified in config', () => {
-                stubWrappedRun_((runner) => runner.emit(Events.TEST_RESULT, {equal: false}));
+                stubWrappedRun_((runner) => runner.emit(Events.TEST_RESULT, {equal: false, state: makeStateStub()}));
                 const config = mkConfigStub_({retry: 2});
 
                 return mkInsistentRunner_({config})
@@ -425,26 +324,17 @@ describe('runner/suite-runner/insistent-suite-runner', () => {
             });
 
             it('should count few diffs during run for one', () => {
+                const state = makeStateStub();
+
                 stubWrappedRun_((runner) => {
-                    runner.emit(Events.TEST_RESULT, {equal: false});
-                    runner.emit(Events.TEST_RESULT, {equal: false});
+                    runner.emit(Events.TEST_RESULT, {equal: false, state});
+                    runner.emit(Events.TEST_RESULT, {equal: false, state});
                 });
                 const config = mkConfigStub_({retry: 2});
 
                 return mkInsistentRunner_({config})
                     .run()
                     .then(() => assert.callCount(RegularSuiteRunner.prototype.run, 1 + 2));
-            });
-
-            it('should not retry on cancel after diff', () => {
-                stubWrappedRun_((runner) => {
-                    runner.emit(Events.TEST_RESULT, {equal: false});
-                    return Promise.reject(new CancelledError());
-                });
-
-                return mkRunnerWithRetries_()
-                    .run()
-                    .then(() => assert.calledOnce(RegularSuiteRunner.prototype.run));
             });
         });
 
@@ -471,16 +361,66 @@ describe('runner/suite-runner/insistent-suite-runner', () => {
     });
 
     describe('cancel', () => {
-        beforeEach(() => {
-            sandbox.stub(RegularSuiteRunner.prototype, 'cancel');
+        it('should not retry after cancel', () => {
+            const config = mkConfigStub_({retry: 1});
+            const insistantRunner = mkInsistentRunner_({config});
+
+            stubWrappedRun_((runner) => {
+                runner.emit(Events.TEST_RESULT, {state: makeStateStub(), equal: false});
+
+                insistantRunner.cancel();
+            });
+
+            return insistantRunner
+                .run()
+                .then(() => assert.calledOnce(RegularSuiteRunner.prototype.run));
         });
 
-        it('should cancel created regular suite runner', () => {
-            const runner = mkInsistentRunner_();
-            stubWrappedRun_(() => runner.cancel());
+        it('should not emit retry events after cancel', () => {
+            const config = mkConfigStub_({retry: 1});
+            const insistantRunner = mkInsistentRunner_({config});
+            const onRetry = sinon.spy().named('onRetry');
 
-            return runner.run()
-                .then(() => assert.calledOnce(RegularSuiteRunner.prototype.cancel));
+            stubWrappedRun_((runner) => {
+                insistantRunner.cancel();
+
+                runner.emit(Events.TEST_RESULT, {state: makeStateStub(), equal: false});
+            });
+
+            return insistantRunner
+                .on(Events.RETRY, onRetry)
+                .run()
+                .then(() => assert.notCalled(onRetry));
+        });
+
+        describe('should not passthrough event', () => {
+            [
+                Events.BEGIN_STATE,
+                Events.SKIP_STATE,
+                Events.END_STATE,
+                Events.UPDATE_RESULT,
+                Events.TEST_RESULT,
+                Events.WARNING,
+                Events.ERROR,
+                Events.CAPTURE
+            ].forEach((event) => {
+                it(`${event}`, () => {
+                    const config = mkConfigStub_({retry: 0});
+                    const insistantRunner = mkInsistentRunner_({config});
+                    const onEventHandler = sinon.spy().named(event);
+
+                    stubWrappedRun_((runner) => {
+                        insistantRunner.cancel();
+
+                        runner.emit(event, {state: makeStateStub()});
+                    });
+
+                    return insistantRunner
+                        .on(event, onEventHandler)
+                        .run()
+                        .then(() => assert.notCalled(onEventHandler));
+                });
+            });
         });
     });
 });
