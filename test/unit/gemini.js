@@ -62,15 +62,15 @@ describe('gemini', () => {
     beforeEach(() => {
         sandbox.stub(Runner.prototype, 'on').returnsThis();
         sandbox.stub(Runner.prototype, 'run').returns(Promise.resolve());
+        sandbox.stub(Runner.prototype, 'cancel').returns(Promise.resolve());
         sandbox.stub(console, 'warn');
         sandbox.stub(pluginsLoader, 'load');
+        sandbox.stub(temp, 'init');
     });
 
     afterEach(() => sandbox.restore());
 
     it('should passthrough runner events', () => {
-        sandbox.stub(temp, 'init');
-
         const runner = new EventEmitter();
         sandbox.stub(Runner, 'create').returns(runner);
 
@@ -119,8 +119,6 @@ describe('gemini', () => {
     });
 
     describe('load plugins', () => {
-        beforeEach(() => sandbox.stub(temp, 'init'));
-
         it('should load plugins', () => {
             return runGeminiTest()
                 .then(() => assert.calledOnce(pluginsLoader.load));
@@ -159,7 +157,6 @@ describe('gemini', () => {
         };
 
         beforeEach(() => {
-            sandbox.stub(temp, 'init');
             sandbox.stub(Config.prototype);
 
             Config.prototype.getBrowserIds.returns([]);
@@ -283,10 +280,6 @@ describe('gemini', () => {
     });
 
     describe('test', () => {
-        beforeEach(function() {
-            sandbox.stub(temp, 'init');
-        });
-
         it('should initialize temp with specified temp dir', () => {
             runGeminiTest({tempDir: '/some/dir'});
 
@@ -309,7 +302,6 @@ describe('gemini', () => {
         beforeEach(() => {
             sandbox.stub(SuiteCollection.prototype, 'skipBrowsers');
             sandbox.stub(Runner.prototype, 'setTestBrowsers');
-            sandbox.stub(temp, 'init');
         });
 
         afterEach(() => {
@@ -378,6 +370,83 @@ describe('gemini', () => {
                 .returns({foo: 'bar'});
 
             assert.deepEqual(Gemini.readRawConfig('some/file/path'), {foo: 'bar'});
+        });
+    });
+
+    describe('cancel', () => {
+        const stubRunner = (scenario) => {
+            Runner.prototype.run.restore();
+
+            sandbox.stub(Runner.prototype, 'run', function() {
+                return Promise.resolve(scenario(this));
+            });
+        };
+
+        const emulateGeminiCancel = (gemini, exitCode) => {
+            stubRunner((runner) => runner.emitAndWait(Events.START_RUNNER));
+
+            gemini.on(Events.START_RUNNER, () => gemini.cancel(exitCode));
+        };
+
+        beforeEach(() => {
+            Runner.prototype.on.restore();
+
+            sandbox.stub(process, 'exit');
+        });
+
+        it('should throw if gemini was not started', () => {
+            const gemini = initGemini();
+
+            return assert.isRejected(gemini.cancel(), /Gemini was not started, nothing to cancel/);
+        });
+
+        it('should throw if cancel was called after gemini runner was resolved', () => {
+            const gemini = initGemini();
+
+            return assert.isRejected(gemini.test().then(() => gemini.cancel()),
+                /Gemini was not started, nothing to cancel/);
+        });
+
+        it('should cancel gemini runner', () => {
+            const gemini = initGemini();
+
+            emulateGeminiCancel(gemini);
+
+            return gemini.test().then(() => assert.calledOnce(Runner.prototype.cancel));
+        });
+
+        it('should be rejected if canceling of gemini runner fails', () => {
+            const gemini = initGemini();
+
+            Runner.prototype.cancel.returns(Promise.reject());
+
+            emulateGeminiCancel(gemini);
+
+            return assert.isRejected(gemini.test());
+        });
+
+        it('should exit after canceling of gemini runner', () => {
+            const gemini = initGemini();
+
+            emulateGeminiCancel(gemini);
+
+            return gemini.test().then(() => assert.calledOnce(process.exit));
+        });
+
+        it('should exit with the given exit code', () => {
+            const gemini = initGemini();
+
+            emulateGeminiCancel(gemini, 100500);
+
+            return gemini.test().then(() => assert.calledWith(process.exit, 100500));
+        });
+
+        it('should exit after cancel', () => {
+            const gemini = initGemini();
+
+            emulateGeminiCancel(gemini);
+
+            return gemini.test().then(() => assert.callOrder(Runner.prototype.cancel, process.exit));
         });
     });
 });
