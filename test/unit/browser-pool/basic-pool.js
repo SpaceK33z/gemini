@@ -3,7 +3,6 @@
 const Promise = require('bluebird');
 const Browser = require('lib/browser');
 const BasicPool = require('lib/browser-pool/basic-pool');
-const signalHandler = require('lib/signal-handler');
 const browserWithId = require('test/util').browserWithId;
 
 describe('UnlimitedPool', function() {
@@ -56,9 +55,33 @@ describe('UnlimitedPool', function() {
             .then(() => assert.calledOnce(browser.quit));
     });
 
-    it('should quit a browser on exit signal', () => {
-        return requestBrowser()
-            .then(() => signalHandler.emit('exit'))
-            .then(() => assert.calledOnce(browser.quit));
+    describe('cancel', () => {
+        it('should cancel active sessions', () => {
+            return Promise.all([requestBrowser(), requestBrowser()])
+                .spread((firstBrowser, secondBrowser) => {
+                    return pool.cancel()
+                        .then(() => {
+                            assert.calledOnce(firstBrowser.quit);
+                            assert.calledOnce(secondBrowser.quit);
+                        });
+                });
+        });
+
+        it('should handle cases when browser to cancel was not launched yet', () => {
+            const spy = sinon.spy().named('launch');
+            browser.launch.returns(Promise.delay(100).then(spy));
+
+            const requestPromise = requestBrowser();
+
+            return pool.cancel()
+                .then(() => requestPromise)
+                .then((browser) => assert.callOrder(spy, browser.quit));
+        });
+
+        it('should not fail if canceling of some browser fails', () => {
+            browser.quit.returns(Promise.reject());
+
+            return assert.isFulfilled(requestBrowser().then(() => pool.cancel()));
+        });
     });
 });

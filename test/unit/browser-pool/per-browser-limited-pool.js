@@ -99,10 +99,11 @@ describe('PerBrowserLimitedPool', () => {
 
             const perBrowserLimitedPool = new PerBrowserLimitedPool(config);
 
-            perBrowserLimitedPool.cancel();
-
-            assert.calledOnce(bro1Pool.cancel);
-            assert.calledOnce(bro2Pool.cancel);
+            return perBrowserLimitedPool.cancel()
+                .then(() => {
+                    assert.calledOnce(bro1Pool.cancel);
+                    assert.calledOnce(bro2Pool.cancel);
+                });
         });
     });
 });

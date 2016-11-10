@@ -6,9 +6,11 @@ const pool = require('lib/browser-pool');
 const Pool = require('lib/browser-pool/pool');
 const Config = require('lib/config');
 const Events = require('lib/constants/events');
+const SignalHandlerEvents = require('lib/constants/signal-handler-events');
 const Coverage = require('lib/coverage');
 const Runner = require('lib/runner');
 const BrowserRunner = require('lib/runner/browser-runner');
+const SignalHandler = require('lib/signal-handler');
 const StateProcessor = require('lib/state-processor/state-processor');
 const SuiteMonitor = require('lib/suite-monitor');
 
@@ -45,6 +47,17 @@ describe('runner', () => {
         });
     };
 
+    const stubSignalHandler = () => {
+        const signalHandler = SignalHandler.create();
+
+        sandbox.stub(signalHandler, 'start').returnsThis();
+        sandbox.stub(signalHandler, 'end');
+
+        sandbox.stub(SignalHandler, 'create').returns(signalHandler);
+
+        return signalHandler;
+    };
+
     beforeEach(() => {
         sandbox.stub(pool, 'create').returns(sinon.createStubInstance(Pool));
 
@@ -56,6 +69,13 @@ describe('runner', () => {
 
         sandbox.spy(BrowserRunner, 'create');
         sandbox.stub(BrowserRunner.prototype, 'run').returns(Promise.resolve());
+        sandbox.stub(BrowserRunner.prototype, 'cancel');
+    });
+
+    afterEach(() => {
+        sandbox.restore();
+
+        process.removeAllListeners();
     });
 
     afterEach(() => sandbox.restore());
@@ -214,7 +234,7 @@ describe('runner', () => {
                         assert.alwaysCalledWith(BrowserRunner.prototype.run, suiteCollection, stateProcessor);
                         assert.notEqual(
                             BrowserRunner.prototype.run.firstCall.thisValue,
-                             BrowserRunner.prototype.run.secondCall.thisValue
+                            BrowserRunner.prototype.run.secondCall.thisValue
                         );
                     });
             });
@@ -487,6 +507,63 @@ describe('runner', () => {
                 testCoverage(Events.TEST_RESULT);
             });
         });
+
+        describe('handling of signals', () => {
+            beforeEach(() => sandbox.spy(Runner.prototype, 'cancel'));
+
+            it('should start signal handler after "START_RUNNER" event', () => {
+                const signalHandler = stubSignalHandler();
+                const runner = createRunner();
+                const onStartRunner = sinon.spy().named('onStartRunner');
+
+                runner.on(Events.START_RUNNER, onStartRunner);
+
+                return run(runner).then(() => assert.callOrder(onStartRunner, signalHandler.start));
+            });
+
+            it('should start signal handler before running of tests', () => {
+                const signalHandler = stubSignalHandler();
+                const runner = createRunner();
+
+                return run(runner).then(() => assert.callOrder(signalHandler.start, BrowserRunner.prototype.run));
+            });
+
+            it('should cancel runner on "EXIT" event', () => {
+                const signalHandler = stubSignalHandler();
+                const runner = createRunner();
+
+                stubBrowserRunner(() => signalHandler.emit(SignalHandlerEvents.EXIT));
+
+                return run(runner).then(() => assert.calledOnce(Runner.prototype.cancel));
+            });
+
+            it('should end signal handler', () => {
+                const signalHandler = stubSignalHandler();
+                const runner = createRunner();
+
+                return run(runner).then(() => assert.calledOnce(signalHandler.end));
+            });
+
+            it('should unconditionally end signal handler even if something was rejected earlier', () => {
+                const signalHandler = stubSignalHandler();
+                const runner = createRunner();
+
+                BrowserRunner.prototype.run.returns(q.reject());
+
+                return run(runner).catch(() => assert.called(signalHandler.end));
+            });
+
+            it('should end signal handler after all "END_RUNNER" handlers have finished', () => {
+                const signalHandler = stubSignalHandler();
+                const runner = createRunner();
+                const onEndRunner = sinon.spy().named('onEndRunner');
+                const onEndRunnerWithDelay = () => Promise.delay(50).then(onEndRunner);
+
+                runner.on(Events.END_RUNNER, onEndRunnerWithDelay);
+
+                return run(runner).then(() => assert.callOrder(onEndRunner, signalHandler.end));
+            });
+        });
     });
 
     describe('setTestBrowsers', () => {
@@ -512,6 +589,47 @@ describe('runner', () => {
             runner.setTestBrowsers(['unknown-bro', 'another-unknown-bro']);
 
             return run(runner).then(() => assert.notCalled(BrowserRunner.create));
+        });
+    });
+
+    describe('cancel', () => {
+        it('should cancel all created browser runners', () => {
+            const runner = createRunner();
+            runner.config.getBrowserIds.returns(['bro1', 'bro2']);
+
+            return run(runner)
+                .then(() => runner.cancel())
+                .then(() => {
+                    assert.calledTwice(BrowserRunner.prototype.cancel);
+
+                    assert.notEqual(
+                        BrowserRunner.prototype.run.firstCall.thisValue,
+                        BrowserRunner.prototype.run.secondCall.thisValue
+                    );
+                });
+        });
+
+        it('should cancel browser pool', () => {
+            const browserPool = sinon.createStubInstance(Pool);
+
+            pool.create.returns(browserPool);
+            browserPool.cancel.returns(Promise.resolve('foo'));
+
+            const runner = createRunner();
+
+            return assert.becomes(runner.cancel(), 'foo');
+        });
+
+        it('should cancel browser pool after canceling of browser runners', () => {
+            const browserPool = sinon.createStubInstance(Pool);
+
+            pool.create.returns(browserPool);
+
+            const runner = createRunner();
+
+            return run(runner)
+                .then(() => runner.cancel())
+                .then(() => assert.callOrder(BrowserRunner.prototype.cancel, browserPool.cancel));
         });
     });
 });

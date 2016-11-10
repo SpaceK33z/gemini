@@ -10,7 +10,7 @@ describe('LimitedPool', function() {
         this.underlyingPool = {
             getBrowser: sinon.stub(),
             freeBrowser: sinon.stub().returns(Promise.resolve()),
-            cancel: sinon.stub()
+            cancel: sinon.stub().returns(Promise.resolve())
         };
 
         this.sinon = sinon.sandbox.create();
@@ -202,7 +202,6 @@ describe('LimitedPool', function() {
                             return pool.freeBrowser(browser);
                         })
                         .catch(function() {
-                            console.log('caught');
                             return secondPromise;
                         });
                 });
@@ -233,17 +232,6 @@ describe('LimitedPool', function() {
                 });
         });
 
-        it('should cancel queued browsers when cancel is called', function() {
-            var pool = this.makePool(1);
-            this.underlyingPool.getBrowser.returns(Promise.resolve(this.makeBrowser()));
-            return pool.getBrowser('id')
-                .then(function() {
-                    var secondRequest = pool.getBrowser('id');
-                    pool.cancel();
-                    return assert.isRejected(secondRequest, CancelledError);
-                });
-        });
-
         it('should reject the queued call when underlying pool rejects the request', function() {
             var pool = this.makePool(1),
                 error = new Error('You shall not pass');
@@ -259,6 +247,46 @@ describe('LimitedPool', function() {
                             return assert.isRejected(secondRequest, error);
                         });
                 });
+        });
+    });
+
+    describe('cancel', () => {
+        it('should cancel queued browsers', function() {
+            var pool = this.makePool(1);
+            this.underlyingPool.getBrowser.returns(Promise.resolve(this.makeBrowser()));
+            return pool.getBrowser('id')
+                .then(function() {
+                    var secondRequest = pool.getBrowser('id');
+
+                    return pool.cancel().then(() => assert.isRejected(secondRequest, CancelledError));
+                });
+        });
+
+        it('should cancel caching pool', function() {
+            const pool = this.makePool(1);
+            this.underlyingPool.cancel.returns(Promise.resolve('foo'));
+
+            return assert.becomes(pool.cancel(), 'foo');
+        });
+
+        it('should reset request queue', function() {
+            const firstBrowser = this.makeBrowser();
+            const secondBrowser = this.makeBrowser();
+            const pool = this.makePool(1);
+
+            this.underlyingPool.getBrowser
+                .withArgs('first').returns(Promise.resolve(firstBrowser))
+                .withArgs('second').returns(Promise.resolve(secondBrowser));
+
+            const result = pool.getBrowser('first')
+                .then((browser) => {
+                    const secondBrowserPromise = pool.getBrowser('second');
+                    return pool.cancel()
+                        .then(() => pool.freeBrowser(browser))
+                        .then(() => secondBrowserPromise);
+                });
+
+            return result.catch(() => assert.calledOnce(this.underlyingPool.getBrowser));
         });
     });
 });
