@@ -249,3 +249,19 @@ module.exports = (gemini, options) => {
     });
 };
 ```
+
+## Cancellation
+
+Use `gemini.cancel(exitCode)` method.
+
+`exitCode` is an exit code with which gemini will be canceled. If exit code has not been passed, gemini will be canceled with exit code `0`. Method is asynchronous. It can be used to cancel gemini from plugins:
+
+```js
+module.exports = (gemini) => {
+    gemini.on(gemini.events.START_RUNNER, () => {
+        if (/* something terrible has happened */) {
+            return gemini.cancel(100500);
+        }
+    });
+};
+```
